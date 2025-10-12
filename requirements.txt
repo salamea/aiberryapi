@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+redis
+redisvl
+sentence-transformers
+langchain
+langchain-google-genai
+PyPDF2
+python-multipart
+prometheus-fastapi-instrumentator
