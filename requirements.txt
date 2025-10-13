@@ -1,10 +1,38 @@
-fastapi
-uvicorn
-redis
-redisvl
-sentence-transformers
-langchain
-langchain-google-genai
-PyPDF2
-python-multipart
-prometheus-fastapi-instrumentator
+# FastAPI and API dependencies
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-multipart==0.0.12
+
+# LangChain ecosystem
+langchain==0.3.1
+langchain-community==0.3.1
+langchain-google-genai==2.0.0
+langchain-redis==0.0.2
+
+# Redis dependencies
+redis==5.0.8
+redis-om==0.3.2
+
+# Vector store and embeddings
+sentence-transformers==3.1.1
+pypdf==4.3.1
+python-docx==1.1.2
+
+# Guardrails
+nemoguardrails==0.10.1
+
+# Monitoring and observability
+prometheus-client==0.21.0
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Utilities
+httpx==0.27.2
+python-dotenv==1.0.1

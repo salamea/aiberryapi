@@ -1,74 +1,156 @@
-name: CI/CD
+name: AIBerry API CI/CD
 
 on:
   push:
+    branches:
+      - main
+      - develop
+      - release
     paths:
-      - 'src/**'
-      - 'Dockerfile'
-      - 'requirements.txt'
-  workflow_dispatch:
+      - 'aiberry-api/**'
+      - '.github/workflows/cicd.yaml'
+  pull_request:
+    branches:
+      - main
+      - release
 
 env:
-  REGISTRY: docker.io
-  API_IMAGE: bsalamea/aiberry-api
+  DOCKER_REGISTRY: docker.io
+  IMAGE_NAME: bsalamea/aiberry-api
 
 jobs:
-  ci:
+  # Lint and Test
+  lint-and-test:
     runs-on: ubuntu-latest
-    outputs:
-      sha_short: ${{ steps.vars.outputs.sha_short }}
     steps:
-      - name: Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: ./aiberry-api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest pytest-asyncio pytest-cov black
+
+      - name: Lint with flake8
+        working-directory: ./aiberry-api
+        run: |
+          # Stop build if there are Python syntax errors or undefined names
+          flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Exit-zero treats all errors as warnings
+          flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      - name: Check code formatting with black
+        working-directory: ./aiberry-api
+        run: |
+          black --check src
+
+  # Build and Push Docker Image
+  build-and-push:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Get short SHA
-        id: vars
-        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=dev-latest,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=prod-v1.0.0,enable=${{ github.ref == 'refs/heads/release' }}
 
-      - name: Build and push API
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
+          context: ./aiberry-api
           push: true
-          tags: ${{ env.API_IMAGE }}:${{ steps.vars.outputs.sha_short }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          platforms: linux/amd64
 
-  cd:
-    needs: ci
-    runs-on: self-hosted  # Must have kubectl + argocd CLI
+      - name: Image digest
+        run: echo ${{ steps.meta.outputs.digest }}
+
+  # Update Kubernetes Manifests
+  update-k8s-manifests:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+
     steps:
-      - name: Checkout deployments
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          repository: salamea/aiberrydeployments
-          path: deployments
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install yq
+      - name: Update image tag in kustomization
         run: |
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+          # Determine environment
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="dev"
+            IMAGE_TAG="${{ github.sha }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            ENV="dev"
+            IMAGE_TAG="dev-latest"
+          fi
 
-      - name: Update dev values
-        working-directory: deployments
-        run: |
-          yq -i '.image.tag = "${{ needs.ci.outputs.sha_short }}"' environments/dev/aiberry-api-values.yaml
+          # Update kustomization.yaml
+          cd k8s/overlays/$ENV
+
+          # Update image tag using kustomize
+          kustomize edit set image ${{ env.IMAGE_NAME }}=${{ env.IMAGE_NAME }}:${IMAGE_TAG}
 
       - name: Commit and push changes
-        uses: Endbug/add-and-commit@v9
-        with:
-          cwd: deployments
-          message: "ci: update image tags to ${{ needs.ci.outputs.sha_short }}"
-          push: true
-
-      - name: Sync ArgoCD
         run: |
-          argocd login argocd-server.argocd --insecure --grpc-web \
-            --username admin --password ${{ secrets.ARGOCD_PASSWORD }}
-          argocd app sync aiberry-dev
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add k8s/overlays/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: Update API image tag to ${{ github.sha }}" && git push)
+
+  # Trigger ArgoCD Sync (optional - ArgoCD auto-sync can handle this)
+  sync-argocd:
+    needs: update-k8s-manifests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Sync ArgoCD Application
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: |
+          argocd app sync aiberry-dev --grpc-web
+          argocd app wait aiberry-dev --timeout 600 --grpc-web
