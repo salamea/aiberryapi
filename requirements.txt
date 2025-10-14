@@ -13,8 +13,7 @@ langchain-google-genai==1.0.10
 # Redis dependencies
 redis==5.0.8
 
-# Vector store and embeddings
-sentence-transformers==3.1.1
+# Document processing
 pypdf==4.3.1
 python-docx==1.1.2
 
