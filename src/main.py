@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI):
 
         await services['vector'].initialize()
         await services['memory'].initialize()
+        await services['guardrails'].initialize()
 
         logger.info("All services initialized successfully")
     except Exception as e:

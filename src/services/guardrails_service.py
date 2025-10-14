@@ -1,9 +1,12 @@
 """
-Guardrails Service for input/output validation and safety
+Guardrails Service for input/output validation and safety using NeMo Guardrails
 """
 import logging
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+from nemoguardrails import RailsConfig, LLMRails
+from nemoguardrails.rails.llm.config import Model
 
 from ..config import Settings
 
@@ -11,13 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 class GuardrailsService:
-    """Service for applying guardrails to inputs and outputs"""
+    """Service for applying guardrails to inputs and outputs using NeMo Guardrails"""
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.enabled = settings.guardrails_enabled
+        self.rails: Optional[LLMRails] = None
 
-        # Patterns for content filtering
+        # Fallback patterns for content filtering (used if NeMo fails)
         self.blocked_patterns = [
             r'(?i)(hack|exploit|vulnerability|malware|phishing)',
             r'(?i)(password|credential|api[_\s]?key|secret[_\s]?key)',
@@ -32,9 +36,76 @@ class GuardrailsService:
             (r'\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b', 'EMAIL', re.IGNORECASE),
         ]
 
+    async def initialize(self):
+        """Initialize NeMo Guardrails"""
+        if not self.enabled:
+            logger.info("Guardrails disabled")
+            return
+
+        try:
+            # Create a basic configuration
+            config = RailsConfig.from_content(
+                colang_content="""
+                define user ask about unsafe topics
+                    "how to hack"
+                    "how to exploit"
+                    "bypass security"
+                    "malware"
+                    "phishing"
+
+                define user share sensitive info
+                    "my password is"
+                    "my credit card"
+                    "my ssn is"
+                    "api key"
+                    "secret key"
+
+                define bot refuse unsafe request
+                    "I cannot provide information on that topic as it may be unsafe or unethical."
+
+                define bot refuse sensitive info
+                    "I cannot process requests containing sensitive personal information. Please remove any passwords, credit card numbers, or other sensitive data."
+
+                define flow handle unsafe topics
+                    user ask about unsafe topics
+                    bot refuse unsafe request
+
+                define flow handle sensitive info
+                    user share sensitive info
+                    bot refuse sensitive info
+                """,
+                yaml_content=f"""
+                models:
+                  - type: main
+                    engine: google
+                    model: {self.settings.google_model}
+                    parameters:
+                      api_key: {self.settings.google_api_key}
+                      temperature: 0.1
+
+                rails:
+                  input:
+                    flows:
+                      - handle unsafe topics
+                      - handle sensitive info
+                  output:
+                    flows:
+                      - handle unsafe topics
+                      - handle sensitive info
+                """
+            )
+
+            self.rails = LLMRails(config)
+            logger.info("NeMo Guardrails initialized successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize NeMo Guardrails: {e}")
+            logger.warning("Falling back to regex-based guardrails")
+            self.rails = None
+
     async def validate_input(self, text: str) -> Dict[str, Any]:
         """
-        Validate user input against guardrails
+        Validate user input against guardrails using NeMo
 
         Args:
             text: Input text to validate
@@ -60,7 +131,25 @@ class GuardrailsService:
                     'message': "Input cannot be empty"
                 }
 
-            # Check for blocked content
+            # Use NeMo Guardrails if available
+            if self.rails:
+                try:
+                    response = await self.rails.generate_async(
+                        messages=[{"role": "user", "content": text}]
+                    )
+
+                    # If NeMo blocked the input, it will return a refusal message
+                    if response and "cannot" in response.get("content", "").lower():
+                        logger.warning(f"Input blocked by NeMo Guardrails")
+                        return {
+                            'passed': False,
+                            'message': response.get("content", "Input contains potentially unsafe content.")
+                        }
+                except Exception as nemo_error:
+                    logger.error(f"NeMo Guardrails validation error: {nemo_error}")
+                    # Fall through to regex-based validation
+
+            # Fallback: Check for blocked content with regex
             for pattern in self.blocked_patterns:
                 if re.search(pattern, text):
                     logger.warning(f"Input blocked by guardrail pattern: {pattern}")
@@ -95,7 +184,7 @@ class GuardrailsService:
 
     async def validate_output(self, text: str) -> Dict[str, Any]:
         """
-        Validate model output against guardrails
+        Validate model output against guardrails using NeMo
 
         Args:
             text: Output text to validate
@@ -115,7 +204,28 @@ class GuardrailsService:
                     'message': "Response too long. Please try a more specific query."
                 }
 
-            # Check for blocked content in output
+            # Use NeMo Guardrails if available for output validation
+            if self.rails:
+                try:
+                    response = await self.rails.generate_async(
+                        messages=[
+                            {"role": "user", "content": "Check this response"},
+                            {"role": "assistant", "content": text}
+                        ]
+                    )
+
+                    # If NeMo flags the output, block it
+                    if response and "cannot" in response.get("content", "").lower():
+                        logger.warning(f"Output blocked by NeMo Guardrails")
+                        return {
+                            'passed': False,
+                            'message': "I cannot provide that information. Please ask a different question."
+                        }
+                except Exception as nemo_error:
+                    logger.error(f"NeMo Guardrails output validation error: {nemo_error}")
+                    # Fall through to regex-based validation
+
+            # Fallback: Check for blocked content in output
             for pattern in self.blocked_patterns:
                 if re.search(pattern, text):
                     logger.warning(f"Output blocked by guardrail pattern: {pattern}")
