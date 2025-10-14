@@ -6,14 +6,14 @@ pydantic-settings==2.5.2
 python-multipart==0.0.12
 
 # LangChain ecosystem
-langchain==0.3.1
-langchain-community==0.3.1
+langchain>=0.3.0, <0.4.0
+langchain-community>=0.3.0, <0.4.0
+langchain-redis==0.2.4
 langchain-google-genai==2.0.0
-langchain-redis==0.0.2
 
 # Redis dependencies
 redis==5.0.8
-redis-om==0.3.2
+redis-om==1.0.3b0
 
 # Vector store and embeddings
 sentence-transformers==3.1.1
