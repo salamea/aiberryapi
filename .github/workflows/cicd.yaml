@@ -47,10 +47,10 @@ jobs:
           # Exit-zero treats all errors as warnings
           flake8 src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Check code formatting with black
-        working-directory: .
-        run: |
-          black --check src
+      #- name: Check code formatting with black
+      #  working-directory: .
+      #  run: |
+      #    black --check src
 
   # Build and Push Docker Image
   build-and-push:

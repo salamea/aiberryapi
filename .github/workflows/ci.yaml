@@ -2,7 +2,7 @@ name: Build API Image
 
 on:
   push:
-    branches: [ main ]
+    branches: [ qa ]
 
 jobs:
   build:
