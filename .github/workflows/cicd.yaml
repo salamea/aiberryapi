@@ -19,7 +19,9 @@ env:
   IMAGE_NAME: bsalamea/aiberry-api
 
 jobs:
-  # Lint and Test
+  # ============================================================
+  # Stage 1: Quality Checks
+  # ============================================================
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -52,7 +54,9 @@ jobs:
       #  run: |
       #    black --check src
 
-  # Build and Push Docker Image
+  # ============================================================
+  # Stage 2: Build & Push Docker Image
+  # ============================================================
   build-and-push:
     needs: lint-and-test
     runs-on: ubuntu-latest
@@ -99,58 +103,5 @@ jobs:
       - name: Image digest
         run: echo ${{ steps.meta.outputs.digest }}
 
-  # Update Kubernetes Manifests
-  update-k8s-manifests:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update image tag in kustomization
-        run: |
-          # Determine environment
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            ENV="dev"
-            IMAGE_TAG="${{ github.sha }}"
-          elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
-            ENV="dev"
-            IMAGE_TAG="dev-latest"
-          fi
-
-          # Update kustomization.yaml
-          cd k8s/overlays/$ENV
-
-          # Update image tag using kustomize
-          kustomize edit set image ${{ env.IMAGE_NAME }}=${{ env.IMAGE_NAME }}:${IMAGE_TAG}
-
-      - name: Commit and push changes
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add k8s/overlays/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: Update API image tag to ${{ github.sha }}" && git push)
-
-  # Trigger ArgoCD Sync (optional - ArgoCD auto-sync can handle this)
-  sync-argocd:
-    needs: update-k8s-manifests
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Install ArgoCD CLI
-        run: |
-          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
-
-      - name: Sync ArgoCD Application
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-        run: |
-          argocd app sync aiberry-dev --grpc-web
-          argocd app wait aiberry-dev --timeout 600 --grpc-web
+  
